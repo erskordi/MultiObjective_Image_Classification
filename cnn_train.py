@@ -117,13 +117,8 @@ def train_cnn(
                     )
         save_txt(f"{round((mem_after - mem_before) / 1024**2, 2)}MB\n{sum(flops)/len(flops):.2f}FLOPS", model_dir/f"cnn_memory_utilization_{output_channels}_{num_conv_layers}_{kernel_size}.txt")
 
-def evaluate_cnn_model(model_class, model_dir, output_channels, num_conv_layers, kernel_size, lr, labels, test_data, device):
+def evaluate_cnn_model(model_class, model_path, output_channels, num_conv_layers, kernel_size, lr, labels, test_data, device):
     """Evaluate the best CNN model based on early stopping and return performance metrics."""
-    
-    # Load the best model based on early stopping
-    best_model_path = model_dir.glob("cnn_early_stopped_model_*.pth")
-    best_model_path = max(best_model_path, key=os.path.getctime)  # Get the most recently saved model
-    print(f"Evaluating model: {best_model_path.name}")
     cnn_model = model_class(
         num_classes=len(labels),
         input_channels=test_data[0][0].shape[0],
@@ -131,11 +126,12 @@ def evaluate_cnn_model(model_class, model_dir, output_channels, num_conv_layers,
         kernel_size=kernel_size,
         num_conv_layers=num_conv_layers
     ).to(device)
-    cnn_model.load_state_dict(torch.load(best_model_path))
+    cnn_model.load_state_dict(torch.load(model_path))
+    cnn_model.to(device)
     loss_fn = nn.CrossEntropyLoss()
     test_dataloader = DataLoader(test_data, batch_size=256, shuffle=False)
     _, _, avg_flops, energy, mem_utilization, all_preds, all_labels = cnn_model.test_model(test_dataloader, loss_fn, device)
-    confusion_matrix(all_preds, all_labels, labels, best_model_path.parent/f"cnn_confusion_matrix_{best_model_path.stem}.png")
+    confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"cnn_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
     
-    return avg_flops, energy, mem_utilization, auc
+    return avg_flops, energy, mem_utilization, auc, output_channels, num_conv_layers, kernel_size, lr

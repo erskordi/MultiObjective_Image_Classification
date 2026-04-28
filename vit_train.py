@@ -137,4 +137,4 @@ def evaluate_vit_model(
     confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"vit_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
     
-    return avg_flops, energy, mem_utilization, auc
+    return avg_flops, energy, mem_utilization, auc, depth, num_heads, patch_size, lr

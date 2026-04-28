@@ -89,20 +89,20 @@ class CNNImageClassifier(nn.Module):
         total_flops = 0
         test_loss, correct = 0, 0
         monitor.begin_window("testing")
-        mem_before = torch.cuda.memory_allocated() if device == "cuda" else 0
+        mem_before = 0.0
         all_preds, all_labels = [], []
 
         for X, y in dataloader:
-            with FlopCounterMode(self) as flop_counter:
-                self(X.to(device))
-            total_flops += flop_counter.get_total_flops()
-            
             X = X.to(device, non_blocking=(device == "cuda"))
             y = y.to(device, non_blocking=(device == "cuda"))
-            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device == "cuda")):
-                pred = self(X)
-                test_loss += loss_fn(pred, y).item()
-                correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+            with FlopCounterMode(display=False) as flop_counter:
+                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device == "cuda")):
+                    pred = self(X)
+                    test_loss += loss_fn(pred, y).item()
+                    correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+                    all_preds.append(pred.cpu())
+                    all_labels.append(y.cpu())
+            total_flops += flop_counter.get_total_flops()
         measurement = monitor.end_window("testing")
         mem_after = torch.cuda.memory_allocated() if device == "cuda" else 0
         mem_utilized = mem_after - mem_before

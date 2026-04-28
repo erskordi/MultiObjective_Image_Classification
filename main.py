@@ -1,4 +1,6 @@
 from pathlib import Path
+import numpy as np
+import pandas as pd
 import torch
 
 from zeus.monitor import ZeusMonitor
@@ -36,22 +38,24 @@ def load_dataset(dataset_type):
 
 
 if __name__ == "__main__":
-    model_type = input(f"Select model type ({', '.join(model_types)}): ").strip().lower()
+    TRAINING = False
     data_type = input(f"Select dataset ({', '.join(data)}): ").strip()
-    # Create directory for saving models and metrics
     model_dirs = [Path(f"saved_models/{data_type}/{model_type}") for model_type in model_types]
 
-    for model_dir in model_dirs:
-        model_dir.mkdir(exist_ok=True)
-    # Reduces file-descriptor pressure from DataLoader shared memory on Linux.
-    torch.multiprocessing.set_sharing_strategy("file_system")
+    if TRAINING:
+        print("Training mode enabled. Models will be trained and saved.")
+        model_type = input(f"Select model type ({', '.join(model_types)}): ").strip().lower()
+        
+        # Create directory for saving models and metrics
+        for model_dir in model_dirs:
+            model_dir.mkdir(exist_ok=True)
+        # Reduces file-descriptor pressure from DataLoader shared memory on Linux.
+        torch.multiprocessing.set_sharing_strategy("file_system")
 
     DEVICE = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
     print(f"Using {DEVICE} device")
 
     monitor = ZeusMonitor(gpu_indices=[0])
-    
-    TRAINING = False
 
     train_data, test_data, classes = load_dataset(data_type)
 
@@ -71,7 +75,38 @@ if __name__ == "__main__":
         else:
             print(f"Invalid model type. Please choose from: {', '.join(model_types)}")
     else:
+        eval_results = {}
         print("Training skipped. Set training = True to train the model.")
+        for model_type in model_types:
+            avg_flops, energy, mem_utilization, auc, files = evaluations(model_type, model_dirs, test_data, classes, DEVICE, IMAGE_SIZE)
+            eval_results[model_type] = {
+                "avg_flops": avg_flops,
+                "energy": energy,
+                "mem_utilization": mem_utilization,
+                "auc": auc,
+                "files": files,
+            }
 
-        avg_flops, energy, mem_utilization, auc = evaluations(model_type, model_dirs, test_data, classes, DEVICE, IMAGE_SIZE)
-        print(f"AUC: {auc:.2f}%, Average FLOPs: {avg_flops:.2f}, Energy: {energy:.2f} J, Memory Utilization: {mem_utilization:.2f} MB")
+        rows = []
+        for model_type, metrics in eval_results.items():
+            for file_name, flops, en, mem, auc_score in zip(
+                metrics["files"],
+                metrics["avg_flops"],
+                metrics["energy"],
+                metrics["mem_utilization"],
+                metrics["auc"],
+            ):
+                rows.append(
+                    {
+                        "model_type": model_type,
+                        "file": file_name,
+                        "avg_flops_log": flops,
+                        "energy_log": en,
+                        "mem_utilization_log": mem,
+                        "auc": auc_score,
+                    }
+                )
+
+        results_df = pd.DataFrame(rows)
+        print(results_df)
+        results_df.to_csv(f"model_evaluation_results_{data_type}.csv", index=False)

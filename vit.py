@@ -170,28 +170,28 @@ class ViTImageClassifier(ViT):
         test_loss, correct = 0, 0
         monitor = ZeusMonitor(gpu_indices=[0])  # Create a monitor instance for testing ZeusMonitor(gpu_indices=[0])  # Create a monitor instance for testing
         monitor.begin_window("testing")
-        mem_before = torch.cuda.memory_allocated() if device == "cuda" else 0
+        torch.cuda.empty_cache()  # Clear GPU cache before testing
+        mem_before = 0.0
         all_preds, all_labels = [], []
 
         for X, y in dataloader:
-            with FlopCounterMode(self) as flop_counter:
-                self(X.to(device))
-            total_flops += flop_counter.get_total_flops()
             X = X.to(device, non_blocking=(device == "cuda"))
             y = y.to(device, non_blocking=(device == "cuda"))
-            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device == "cuda")):
-                pred = self(X)
-                if self.use_mdn:
-                    logits, _, _, _ = pred
-                    all_preds.append(logits.cpu())
-                    all_labels.append(y.cpu())
-                    test_loss += loss_fn(logits, y).item()
-                    correct += (logits.argmax(1) == y).type(torch.float).sum().item()
-                else:
-                    all_preds.append(pred.cpu())
-                    all_labels.append(y.cpu())
-                    test_loss += loss_fn(pred, y).item()
-                    correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+            with FlopCounterMode(display=False) as flop_counter:
+                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device == "cuda")):
+                    pred = self(X)
+                    if self.use_mdn:
+                        logits, _, _, _ = pred
+                        all_preds.append(logits.cpu())
+                        all_labels.append(y.cpu())
+                        test_loss += loss_fn(logits, y).item()
+                        correct += (logits.argmax(1) == y).type(torch.float).sum().item()
+                    else:
+                        all_preds.append(pred.cpu())
+                        all_labels.append(y.cpu())
+                        test_loss += loss_fn(pred, y).item()
+                        correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+            total_flops += flop_counter.get_total_flops()
         test_loss /= num_batches
         correct /= size
         measurement = monitor.end_window("testing")
@@ -204,7 +204,7 @@ class ViTImageClassifier(ViT):
         all_labels = torch.cat(all_labels)
 
 
-        return 100*correct, test_loss, total_flops / size, round(measurement.total_energy, 2), round(mem_utilized / 1024**2, 2), all_preds, all_labels
+        return 100*correct, test_loss, total_flops , measurement.total_energy, mem_utilized / 1024**2, all_preds, all_labels
     
     def save_model(self, path):
         torch.save(self.state_dict(), path)

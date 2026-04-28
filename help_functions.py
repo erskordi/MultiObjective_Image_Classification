@@ -1,5 +1,6 @@
 import math
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import torch
 from torchmetrics.classification import MulticlassConfusionMatrix, MulticlassAUROC
@@ -96,9 +97,9 @@ def save_txt(content, save_path):
         f.write(content)
 
 def confusion_matrix(preds, labels, classes, save_path):
-    cm = MulticlassConfusionMatrix(num_classes=len(classes))
-    cm.update((preds.cpu(), labels.cpu()))
-    cm_matrix = cm.compute().numpy()
+    metric = MulticlassConfusionMatrix(num_classes=len(classes), normalize="all")
+    cm = metric(preds.cpu(), labels.cpu()).numpy()
+    cm_matrix = pd.DataFrame(np.round(cm/cm.sum(axis=0)[:, None], 2) * 100, index=classes, columns=classes)
     plt.figure(figsize=(8, 6))
     plt.imshow(cm_matrix, interpolation='nearest', cmap='Blues')
     plt.title("Confusion Matrix")
@@ -106,6 +107,21 @@ def confusion_matrix(preds, labels, classes, save_path):
     tick_marks = range(len(classes))
     plt.xticks(tick_marks, classes, rotation=45)
     plt.yticks(tick_marks, classes)
+
+    cm_values = cm_matrix.values
+    threshold = cm_values.max() / 2.0 if cm_values.size else 0
+    for i in range(cm_values.shape[0]):
+        for j in range(cm_values.shape[1]):
+            value = cm_values[i, j]
+            plt.text(
+                j,
+                i,
+                f"{value:.1f}",
+                ha="center",
+                va="center",
+                color="white" if value > threshold else "black",
+            )
+
     plt.ylabel("True Label")
     plt.xlabel("Predicted Label")
     plt.tight_layout()
@@ -130,6 +146,6 @@ def vanilla_cm(preds, labels, classes, save_path):
     plt.close()
 
 def auroc(preds, labels, num_classes):
-    auroc_metric = MulticlassAUROC(num_classes=num_classes)
-    auroc_metric.update((preds.cpu(), labels.cpu()))
+    auroc_metric = MulticlassAUROC(num_classes=len(num_classes))
+    auroc_metric.update(preds.cpu(), labels.cpu())
     return auroc_metric.compute().item()

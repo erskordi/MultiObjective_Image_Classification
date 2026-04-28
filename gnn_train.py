@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from early_stopping_pytorch import EarlyStopping
 from torch.utils.flop_counter import FlopCounterMode
+from torchsummary import summary
 from zeus.monitor import ZeusMonitor
 
 from gnn_preprocess import GenericImagePreprocessor, GenericGraphReadyImageDataset
@@ -108,20 +109,22 @@ def test_model(model, loader, criterion, device, use_amp=False):
 
     monitor = ZeusMonitor(gpu_indices=[0])  # Create a monitor instance for testing
     monitor.begin_window("testing")
-    mem_before = torch.cuda.memory_allocated() if device == "cuda" else 0
+    mem_before = 0.0
     all_preds, all_labels = [], []
 
     for batch in loader:
         batch = move_batch_to_device(batch, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            with FlopCounterMode(model) as flop_counter:
+            with FlopCounterMode(display=False) as flop_counter:
                 logits = model(
                     x1=batch["x1"],
                     x2=batch["x2"],
                     edge_index=batch["edge_index"],
                     batch=batch["batch"],
                 )
+                all_preds.append(logits.cpu())
+                all_labels.append(batch["label"].cpu())
         total_flops += flop_counter.get_total_flops()
 
         loss = criterion(logits, batch["label"])
@@ -307,7 +310,7 @@ def train_gnn(
                 use_amp=use_amp,
             )
 
-            acc, avg_loss, avg_flops, _, _ = test_model(
+            acc, avg_loss, avg_flops, _, _, _, _ = test_model(
                 model=pgnn_model,
                 loader=test_loader,
                 criterion=criterion,
@@ -355,7 +358,7 @@ def train_gnn(
 
             torch.save(
                 pgnn_model.state_dict(),
-                model_dir / f"gnn_model_{x1_hidden_dim}_{x2_hidden_dim}_{lr}.pth",
+                model_dir / f"gnn_model_{x1_in_dim}_{x1_hidden_dim}_{x2_in_dim}_{x2_hidden_dim}_{lr}.pth",
             )
 
             plot_metrics(
@@ -363,7 +366,7 @@ def train_gnn(
                 training_loss,
                 accuracy,
                 total_energy,
-                model_dir / f"gnn_metrics_{x1_hidden_dim}_{x2_hidden_dim}_{lr}.png",
+                model_dir / f"gnn_metrics_{x1_in_dim}_{x1_hidden_dim}_{x2_in_dim}_{x2_hidden_dim}_{lr}.png",
             )
 
             save_metrics(
@@ -374,28 +377,30 @@ def train_gnn(
                 total_energy,
                 mem_utilized,
                 flops,
-                model_dir / f"gnn_metrics_{x1_hidden_dim}_{x2_hidden_dim}_{lr}.csv",
+                model_dir / f"gnn_metrics_{x1_in_dim}_{x1_hidden_dim}_{x2_in_dim}_{x2_hidden_dim}_{lr}.csv",
             )
 
             save_txt(
                 f"{round((mem_after - mem_before) / 1024**2, 2)}MB\n{sum(flops)/epochs_ran:.2f}FLOPS",
-                model_dir / f"gnn_memory_utilization_{x1_hidden_dim}_{x2_hidden_dim}_{lr}.txt",
+                model_dir / f"gnn_memory_utilization_{x1_in_dim}_{x1_hidden_dim}_{x2_in_dim}_{x2_hidden_dim}_{lr}.txt",
             )
 
 def evaluate_gnn_model(
         model_class, 
         model_path, 
         test_data, 
-        x1_param, 
-        x2_param, 
+        x1_in_param, 
+        x1_hidden_param, 
+        x2_in_param, 
+        x2_hidden_param, 
         lr, 
         labels, 
         device):
     cfg = PGNNConfig(
-        x1_in_dim=x1_param,
-        x2_in_dim=x2_param,
-        x1_hidden_dim=x1_param,
-        x2_hidden_dim=x2_param,
+        x1_in_dim=x1_in_param,
+        x2_in_dim=x2_in_param,
+        x1_hidden_dim=x1_hidden_param,
+        x2_hidden_dim=x2_hidden_param,
         gcn_hidden=64,
         cheb_hidden=64,
         feat_dim=128,
@@ -408,9 +413,45 @@ def evaluate_gnn_model(
     )
 
     pgnn_model = build_pgnn_model(cfg).to(device)
-    pgnn_model.load_state_dict(torch.load(model_path))
+    pgnn_model.load_state_dict(torch.load(model_path, map_location=device))
+    pgnn_model.to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    test_dataloader = DataLoader(test_data, batch_size=256, shuffle=False)
+
+    preprocessor = GenericImagePreprocessor(
+        normalize=True,
+        mean=(0.5,),
+        std=(0.5,),
+        add_spatial_coords=True,
+        include_intensity=True,
+        smoothing_kernel_size=3,
+    )
+    test_pre = GenericGraphReadyImageDataset(
+        base_dataset=test_data,
+        preprocessor=preprocessor,
+        use_patches=False,
+    )
+    graph_builder = SparseImageGraphBuilder(
+        connectivity=4,
+        add_self_loops=True,
+        undirected=True,
+    )
+    test_ds = SparseGraphReadyDataset(
+        base_dataset=test_pre,
+        graph_builder=graph_builder,
+        cache_graphs_by_size=True,
+    )
+
+    num_workers = min(4, os.cpu_count() or 2)
+    loader_kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": (device == "cuda"),
+        "persistent_workers": False,
+        "collate_fn": sparse_graph_collate_fn,
+    }
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = 2
+
+    test_dataloader = DataLoader(test_ds, batch_size=256, shuffle=False, **loader_kwargs)
     _, _, avg_flops, energy, mem_utilization, all_preds, all_labels = test_model(
         model=pgnn_model,
         loader=test_dataloader,
@@ -421,7 +462,7 @@ def evaluate_gnn_model(
     confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"gnn_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
 
-    return avg_flops, energy, mem_utilization, auc
+    return avg_flops, energy, mem_utilization, auc, x1_in_param, x1_hidden_param, x2_in_param, x2_hidden_param, lr
 
 # ============================================================
 # Main
