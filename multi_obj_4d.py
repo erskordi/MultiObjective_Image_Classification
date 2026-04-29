@@ -16,6 +16,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
 
 
 @dataclass
@@ -246,45 +247,58 @@ def pareto_front_conts4d(
     )
 
 
-def constrained_pairwise_front(
+def constrained_single_objective_optima(
     mo4d: MOStruct,
-    objective_i: int,
-    objective_j: int,
-    maximize: tuple[bool, bool, bool, bool] = (False, False, False, True),
     flops_max: float = np.inf,
     energy_max: float = np.inf,
     memory_max: float = np.inf,
     auc_min: float = -np.inf,
-) -> MOStruct:
-    """Compute the 2D Pareto front on a feasible subset for a chosen objective pair.
+) -> pd.DataFrame:
+    """Compute one constrained optimum for each objective.
 
-    The feasible subset is defined by the user thresholds. On that subset, this
-    returns the non-dominated points for the visible objective pair only.
+    - maximize AUC with FLOPs/Energy/Memory upper bounds
+    - minimize Energy with FLOPs/Memory upper bounds and AUC lower bound
+    - minimize FLOPs with Energy/Memory upper bounds and AUC lower bound
+    - minimize Memory with FLOPs/Energy upper bounds and AUC lower bound
     """
-    feasible_mask = _constraint_mask(
-        mo4d,
-        flops_max=flops_max,
-        energy_max=energy_max,
-        memory_max=memory_max,
-        auc_min=auc_min,
-    )
-    feasible = _subset_mo_struct(mo4d, feasible_mask)
-    if feasible.o1.size == 0:
-        return feasible
+    rows: list[dict[str, object]] = []
 
-    objectives = _to_objective_matrix(feasible)
-    pair_objectives = objectives[:, [objective_i, objective_j]]
-    pair_directions = (maximize[objective_i], maximize[objective_j])
-    keep = _pareto_mask(pair_objectives, pair_directions)
-    pair_points = _subset_mo_struct(feasible, keep)
+    flops = mo4d.o1.ravel()
+    energy = mo4d.o2.ravel()
+    memory = mo4d.o3.ravel()
+    auc = mo4d.o4.ravel()
+    model_file = mo4d.model_file.ravel()
 
-    visible = np.column_stack(
-        (pair_points.o1, pair_points.o2, pair_points.o3, pair_points.o4)
-    )[:, [objective_i, objective_j]]
-    sort_signs = np.where(np.asarray(pair_directions, dtype=bool), -1.0, 1.0)
-    sort_key = visible * sort_signs
-    order = np.lexsort((sort_key[:, 1], sort_key[:, 0]))
-    return _subset_mo_struct(pair_points, order)
+    def _append_best(label: str, mask: np.ndarray, values: np.ndarray, maximize: bool) -> None:
+        idx_candidates = np.where(mask)[0]
+        if idx_candidates.size == 0:
+            return
+        best_local = np.argmax(values[idx_candidates]) if maximize else np.argmin(values[idx_candidates])
+        best_idx = int(idx_candidates[best_local])
+        rows.append(
+            {
+                "Optimization": label,
+                "Model File": model_file[best_idx],
+                "FLOPs (log)": float(flops[best_idx]),
+                "Energy (log)": float(energy[best_idx]),
+                "Memory Utilization (log)": float(memory[best_idx]),
+                "AUC": float(auc[best_idx]),
+            }
+        )
+
+    auc_mask = (flops <= flops_max) & (energy <= energy_max) & (memory <= memory_max)
+    _append_best("Max AUC", auc_mask, auc, maximize=True)
+
+    energy_mask = (flops <= flops_max) & (memory <= memory_max) & (auc >= auc_min)
+    _append_best("Min Energy", energy_mask, energy, maximize=False)
+
+    flops_mask = (energy <= energy_max) & (memory <= memory_max) & (auc >= auc_min)
+    _append_best("Min FLOPs", flops_mask, flops, maximize=False)
+
+    memory_mask = (flops <= flops_max) & (energy <= energy_max) & (auc >= auc_min)
+    _append_best("Min Memory", memory_mask, memory, maximize=False)
+
+    return pd.DataFrame(rows)
 
 
 _OBJ_LABELS = [
@@ -312,7 +326,7 @@ def plot_mo_all(figure_num: int, mo_points: MOStruct, mo_pareto_front: MOStruct)
         c=mo_points.o4.ravel(),
         cmap="viridis",
         alpha=0.85,
-        s=80,
+        s=52,
         edgecolors="white",
         linewidths=0.4,
         label="Pareto points",
@@ -349,28 +363,28 @@ def plot_mo_all(figure_num: int, mo_points: MOStruct, mo_pareto_front: MOStruct)
 def plot_pairwise_objectives(
     mo_all: MOStruct,
     figure_num: int = 2,
-    maximize: tuple[bool, bool, bool, bool] = (False, False, False, True),
     flops_max: float = np.inf,
     energy_max: float = np.inf,
     memory_max: float = np.inf,
     auc_min: float = -np.inf,
-) -> None:
-    """Plot all 6 pairwise 2D scatter plots of the 4 objectives.
-
-    Each subplot shows all candidate points, the feasible subset under the
-    user constraints, and the constrained 2D Pareto front for the visible pair.
-    Returns a dictionary of index tables, one per subplot pair.
-    """
+) -> dict[str, pd.DataFrame]:
+    """Plot all 6 pairwise 2D objective plots with constrained single-objective optima."""
     objectives_all = [mo_all.o1, mo_all.o2, mo_all.o3, mo_all.o4]
-    feasible_mask = _constraint_mask(
+
+    optima_df = constrained_single_objective_optima(
         mo_all,
         flops_max=flops_max,
         energy_max=energy_max,
         memory_max=memory_max,
         auc_min=auc_min,
     )
-    mo_feasible = _subset_mo_struct(mo_all, feasible_mask)
-    objectives_feasible = [mo_feasible.o1, mo_feasible.o2, mo_feasible.o3, mo_feasible.o4]
+
+    marker_map = {
+        "Max AUC": "*",
+        "Min Energy": "s",
+        "Min FLOPs": "^",
+        "Min Memory": "D",
+    }
 
     pairs = [
         (0, 1), (0, 2), (0, 3),
@@ -379,90 +393,140 @@ def plot_pairwise_objectives(
     ]
 
     fig, axes = plt.subplots(2, 3, num=figure_num, figsize=(15, 9))
-    fig.suptitle("Pairwise Objective Scatter Plots", fontsize=14)
+    fig.suptitle("Pairwise Objective Plots with Constrained Single-Objective Optima", fontsize=14)
     axes = axes.ravel()
 
     pair_tables: dict[str, pd.DataFrame] = {}
 
     for ax, (i, j) in zip(axes, pairs):
-        # All candidate points in background.
         ax.scatter(
             objectives_all[i].ravel(),
             objectives_all[j].ravel(),
             c="lightgrey",
-            s=70,
+            s=24,
             alpha=0.45,
             edgecolors="grey",
             linewidths=0.35,
             label="All points",
         )
-        # Feasible points under objective constraints.
-        sc = ax.scatter(
-            objectives_feasible[i].ravel(),
-            objectives_feasible[j].ravel(),
-            c=mo_feasible.o4.ravel(),
-            cmap="viridis",
-            s=120,
-            alpha=0.9,
-            edgecolors="black",
-            linewidths=0.45,
-            zorder=3,
-            label="Feasible points",
-        )
 
-        pair_front = constrained_pairwise_front(
-            mo_all,
-            i,
-            j,
-            maximize=maximize,
-            flops_max=flops_max,
-            energy_max=energy_max,
-            memory_max=memory_max,
-            auc_min=auc_min,
-        )
+        pair_rows: list[dict[str, object]] = []
+        for _, row in optima_df.iterrows():
+            x_val = float(row[_OBJ_LABELS[i]])
+            y_val = float(row[_OBJ_LABELS[j]])
+            opt_label = str(row["Optimization"])
+            marker = marker_map.get(opt_label, "o")
 
-        front_x = [pair_front.o1, pair_front.o2, pair_front.o3, pair_front.o4][i].ravel()
-        front_y = [pair_front.o1, pair_front.o2, pair_front.o3, pair_front.o4][j].ravel()
+            ax.scatter(
+                x_val,
+                y_val,
+                s=150 if marker == "*" else 50,
+                marker=marker,
+                c="crimson",
+                edgecolors="black",
+                linewidths=0.7,
+                zorder=2,
+                label=opt_label,
+            )
 
-        # Constrained 2D Pareto front for the visible pair.
-        ax.plot(
-            front_x,
-            front_y,
-            color="crimson",
-            linewidth=2.2,
-            marker="o",
-            markersize=7,
-            markeredgecolor="darkred",
-            zorder=4,
-            label="Constrained front",
-        )
-        ax.set_xlabel(_OBJ_LABELS[i])
-        ax.set_ylabel(_OBJ_LABELS[j])
-        ax.set_title(f"{_OBJ_LABELS[i]} vs {_OBJ_LABELS[j]}")
+            pair_rows.append(
+                {
+                    "Optimization": opt_label,
+                    "Model File": row["Model File"],
+                    _OBJ_LABELS[i]: x_val,
+                    _OBJ_LABELS[j]: y_val,
+                }
+            )
 
-        for idx, (x_val, y_val) in enumerate(zip(front_x, front_y), start=1):
+        pair_table_df = pd.DataFrame(pair_rows)
+
+        # Stagger labels for duplicate points to avoid complete overlap.
+        point_label_counts: dict[tuple[float, float], int] = {}
+        for idx, (_, row) in enumerate(pair_table_df.iterrows(), start=1):
+            x_val = float(row[_OBJ_LABELS[i]])
+            y_val = float(row[_OBJ_LABELS[j]])
+
+            # Round keys to keep numerically equivalent points grouped together.
+            point_key = (round(x_val, 8), round(y_val, 8))
+            dup_count = point_label_counts.get(point_key, 0)
+            point_label_counts[point_key] = dup_count + 1
+
+            # Cycle through small offsets so coincident labels remain readable.
+            base_offsets = [(4, 4), (4, 14), (14, 4), (-10, 10), (10, -8), (-12, -6)]
+            dx, dy = base_offsets[dup_count % len(base_offsets)]
+
             ax.annotate(
                 str(idx),
                 (x_val, y_val),
                 textcoords="offset points",
-                xytext=(4, 4),
+                xytext=(dx, dy),
                 fontsize=7,
                 alpha=0.9,
             )
 
-        pair_key = f"{_OBJ_LABELS[i]} vs {_OBJ_LABELS[j]}"
-        pair_tables[pair_key] = pd.DataFrame(
-            {
-                "Index": np.arange(1, pair_front.model_file.size + 1),
-                "Model File": pair_front.model_file,
-                _OBJ_LABELS[i]: front_x,
-                _OBJ_LABELS[j]: front_y,
-            }
+        ax.set_xlabel(_OBJ_LABELS[i])
+        ax.set_ylabel(_OBJ_LABELS[j])
+        ax.set_title(f"{_OBJ_LABELS[i]} vs {_OBJ_LABELS[j]}")
+
+        unique_labels = [str(v) for v in pd.unique(pair_table_df["Optimization"])] if not pair_table_df.empty else []
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="lightgrey",
+                markeredgecolor="grey",
+                markeredgewidth=0.35,
+                markersize=2,
+                linestyle="None",
+                label="All points",
+            )
+        ]
+        legend_labels = ["All points"]
+        for label in unique_labels:
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker=marker_map.get(label, "o"),
+                    color="none",
+                    markerfacecolor="crimson",
+                    markeredgecolor="black",
+                    markeredgewidth=0.7,
+                    markersize=4,
+                    linestyle="None",
+                    label=label,
+                )
+            )
+            legend_labels.append(label)
+
+        ax.legend(
+            legend_handles,
+            legend_labels,
+            fontsize=6,
+            loc="best",
+            handlelength=1.0,
+            borderpad=0.25,
+            labelspacing=0.25,
         )
 
-        fig.colorbar(sc, ax=ax, label=_OBJ_LABELS[3])
+        pair_key = f"{_OBJ_LABELS[i]} vs {_OBJ_LABELS[j]}"
+        if pair_table_df.empty:
+            pair_tables[pair_key] = pd.DataFrame(
+                columns=["Index", "Optimization", "Model File", _OBJ_LABELS[i], _OBJ_LABELS[j]]
+            )
+        else:
+            pair_tables[pair_key] = pd.DataFrame(
+                {
+                    "Index": np.arange(1, pair_table_df.shape[0] + 1),
+                    "Optimization": pair_table_df["Optimization"],
+                    "Model File": pair_table_df["Model File"],
+                    _OBJ_LABELS[i]: pair_table_df[_OBJ_LABELS[i]],
+                    _OBJ_LABELS[j]: pair_table_df[_OBJ_LABELS[j]],
+                }
+            )
 
-    axes[-1].legend(loc="best", fontsize=8)
     fig.tight_layout()
     return pair_tables
 
@@ -471,13 +535,13 @@ def plot_pair_index_tables(
     pair_tables: dict[str, pd.DataFrame],
     figure_num: int = 3,
 ) -> None:
-    """Plot index-to-model mapping tables for all pairwise constrained fronts."""
+    """Plot index-to-model mapping tables for all pairwise single-objective overlays."""
     fig, axes = plt.subplots(num=figure_num, nrows=3, ncols=2, figsize=(18, 14))
     axes = axes.ravel()
 
     for ax, (pair_name, table_df) in zip(axes, pair_tables.items()):
         ax.axis("off")
-        ax.set_title(pair_name, fontsize=11)
+        ax.set_title(pair_name, fontsize=10, pad=8)
         table = ax.table(
             cellText=table_df.values,
             colLabels=table_df.columns,
@@ -488,8 +552,8 @@ def plot_pair_index_tables(
         table.set_fontsize(8)
         table.scale(1.0, 1.1)
 
-    fig.suptitle("Constrained Front Index Tables by Subplot", fontsize=14)
-    fig.tight_layout()
+    fig.suptitle("Constrained Single-Objective Optima: Index Tables by Subplot", fontsize=14, y=0.995)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.965])
 
 
 def run_reg_mo_obj(
@@ -501,11 +565,7 @@ def run_reg_mo_obj(
     memory_max: float = np.inf,
     auc_min: float = -np.inf,
 ) -> tuple[MOStruct, MOStruct, MOStruct]:
-    """End-to-end 4D Pareto extraction from CSV metrics.
-
-    The maximize tuple controls each objective direction. Example:
-    (False, False, False, True) means minimize O1/O2/O3 and maximize O4.
-    """
+    """End-to-end 4D analysis from CSV metrics."""
     mo4d = setup_multi_obj_from_csv(csv_path=csv_path, model_type=model_type)
     mo4d_pareto_points = pareto_opt4d(mo4d, maximize=maximize)
     mo4d_pareto_front = pareto_front_conts4d(mo4d, maximize=maximize)
@@ -514,7 +574,6 @@ def run_reg_mo_obj(
     pair_tables = plot_pairwise_objectives(
         mo4d,
         figure_num=2,
-        maximize=maximize,
         flops_max=flops_max,
         energy_max=energy_max,
         memory_max=memory_max,
@@ -525,7 +584,7 @@ def run_reg_mo_obj(
     for pair_name, table_df in pair_tables.items():
         print(f"\n{pair_name}")
         if table_df.empty:
-            print("No constrained-front points for this subplot.")
+            print("No feasible single-objective optima under the provided constraints.")
         else:
             print(table_df.to_string(index=False))
 
