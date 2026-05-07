@@ -143,8 +143,10 @@ def test_model(model, loader, criterion, device, use_amp=False):
     print(f"Test Error: \n Accuracy: {avg_acc:>0.1f}%, Avg loss: {avg_loss:>8f} \n")
     all_preds = torch.cat(all_preds)
     all_labels = torch.cat(all_labels)
+    parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Number of parameters: {parameters}")
 
-    return avg_acc, avg_loss, average_flops, round(measurement.total_energy, 2), round(mem_utilized / 1024**2, 2), all_preds, all_labels
+    return avg_acc, avg_loss, average_flops, round(measurement.total_energy, 2), round(mem_utilized / 1024**2, 2), parameters, all_preds, all_labels
 
 
 # ============================================================
@@ -310,7 +312,7 @@ def train_gnn(
                 use_amp=use_amp,
             )
 
-            acc, avg_loss, avg_flops, _, _, _, _ = test_model(
+            acc, avg_loss, avg_flops, _, _, _, _, _ = test_model(
                 model=pgnn_model,
                 loader=test_loader,
                 criterion=criterion,
@@ -452,7 +454,7 @@ def evaluate_gnn_model(
         loader_kwargs["prefetch_factor"] = 2
 
     test_dataloader = DataLoader(test_ds, batch_size=256, shuffle=False, **loader_kwargs)
-    _, _, avg_flops, energy, mem_utilization, all_preds, all_labels = test_model(
+    _, _, avg_flops, energy, mem_utilization, params, all_preds, all_labels = test_model(
         model=pgnn_model,
         loader=test_dataloader,
         criterion=criterion,
@@ -462,7 +464,7 @@ def evaluate_gnn_model(
     confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"gnn_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
 
-    return avg_flops, energy, mem_utilization, auc, x1_in_param, x1_hidden_param, x2_in_param, x2_hidden_param, lr
+    return avg_flops, energy, mem_utilization, auc, x1_in_param, x1_hidden_param, x2_in_param, x2_hidden_param, lr, params
 
 # ============================================================
 # Main

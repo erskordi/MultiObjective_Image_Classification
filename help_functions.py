@@ -93,40 +93,57 @@ def save_metrics(epochs, training_loss, accuracy, test_loss, total_energy, mem_u
     metrics_df.to_csv(save_path, index=False)
 
 def save_txt(content, save_path):
-    with open(save_path, "w") as f:
+    with open(save_path, "w", encoding="utf-8") as f:
         f.write(content)
 
 def confusion_matrix(preds, labels, classes, save_path):
-    metric = MulticlassConfusionMatrix(num_classes=len(classes), normalize="all")
-    cm = metric(preds.cpu(), labels.cpu()).numpy()
-    cm_matrix = pd.DataFrame(np.round(cm/cm.sum(axis=0)[:, None], 2) * 100, index=classes, columns=classes)
-    plt.figure(figsize=(8, 6))
-    plt.imshow(cm_matrix, interpolation='nearest', cmap='Blues')
-    plt.title("Confusion Matrix")
-    plt.colorbar()
-    tick_marks = range(len(classes))
-    plt.xticks(tick_marks, classes, rotation=45)
-    plt.yticks(tick_marks, classes)
+    num_classes = len(classes)
+    metric = MulticlassConfusionMatrix(num_classes=num_classes)
+    cm_counts = metric(preds.cpu(), labels.cpu()).numpy().astype(np.float64)
+    row_sums = cm_counts.sum(axis=1, keepdims=True)
+    cm_percent = np.divide(
+        cm_counts,
+        row_sums,
+        out=np.zeros_like(cm_counts, dtype=np.float64),
+        where=(row_sums != 0),
+    ) * 100.0
+    cm_matrix = pd.DataFrame(cm_percent, index=classes, columns=classes)
+
+    fig_width = max(12.0, 0.65 * num_classes)
+    fig_height = max(10.0, 0.55 * num_classes)
+    tick_fontsize = max(8, min(12, int(220 / max(1, num_classes))))
+    annotation_fontsize = max(5, min(10, int(170 / max(1, num_classes))))
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    im = ax.imshow(cm_matrix, interpolation="nearest", cmap="Blues", vmin=0.0, vmax=100.0)
+    ax.set_title("Confusion Matrix")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Row %")
+    tick_marks = range(num_classes)
+    ax.set_xticks(list(tick_marks))
+    ax.set_yticks(list(tick_marks))
+    ax.set_xticklabels(classes, rotation=45, ha="right", fontsize=tick_fontsize)
+    ax.set_yticklabels(classes, fontsize=tick_fontsize)
 
     cm_values = cm_matrix.values
     threshold = cm_values.max() / 2.0 if cm_values.size else 0
     for i in range(cm_values.shape[0]):
         for j in range(cm_values.shape[1]):
             value = cm_values[i, j]
-            plt.text(
+            ax.text(
                 j,
                 i,
                 f"{value:.1f}",
                 ha="center",
                 va="center",
                 color="white" if value > threshold else "black",
+                fontsize=annotation_fontsize,
             )
 
-    plt.ylabel("True Label")
-    plt.xlabel("Predicted Label")
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
+    ax.set_ylabel("True Label")
+    ax.set_xlabel("Predicted Label")
+    fig.tight_layout()
+    fig.savefig(save_path, bbox_inches="tight", dpi=200)
+    plt.close(fig)
 
 def vanilla_cm(preds, labels, classes, save_path):
     cm = torch.zeros((len(classes), len(classes)), dtype=torch.int32)

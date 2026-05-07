@@ -203,8 +203,11 @@ class ViTImageClassifier(ViT):
         all_preds = torch.cat(all_preds)
         all_labels = torch.cat(all_labels)
 
+        parameters = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"Number of parameters: {parameters}")
 
-        return 100*correct, test_loss, total_flops , measurement.total_energy, mem_utilized / 1024**2, all_preds, all_labels
+
+        return 100*correct, test_loss, total_flops, measurement.total_energy, mem_utilized / 1024**2, parameters, all_preds, all_labels
     
     def save_model(self, path):
         torch.save(self.state_dict(), path)

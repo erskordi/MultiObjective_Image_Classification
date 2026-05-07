@@ -76,7 +76,7 @@ def train_vit(
             total_loss, epoch_energy, epoch_mem = vit_model.train_model(train_dataloader, loss_fn, optimizer, device, monitor)
             total_energy.append(epoch_energy)
             mem_utilized.append(epoch_mem)
-            acc, avg_loss, avg_flops, _, _ = vit_model.test_model(test_dataloader, loss_fn, device, monitor)
+            acc, avg_loss, avg_flops, _, _, _, _, _ = vit_model.test_model(test_dataloader, loss_fn, device)
             early_stopping(avg_loss, vit_model)
             if early_stopping.early_stop:
                 print("Early stopping triggered")
@@ -133,8 +133,8 @@ def evaluate_vit_model(
     vit_model.to(device)
     loss_fn = nn.CrossEntropyLoss()
     test_dataloader = DataLoader(test_data, batch_size=256, shuffle=False)
-    _, _, avg_flops, energy, mem_utilization, all_preds, all_labels = vit_model.test_model(test_dataloader, loss_fn, device)
+    _, _, avg_flops, energy, mem_utilization, params, all_preds, all_labels = vit_model.test_model(test_dataloader, loss_fn, device)
     confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"vit_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
     
-    return avg_flops, energy, mem_utilization, auc, depth, num_heads, patch_size, lr
+    return avg_flops, energy, mem_utilization, auc, depth, num_heads, patch_size, lr, params

@@ -79,7 +79,7 @@ def train_cnn(
             total_loss, epoch_energy, epoch_mem = cnn_model.train_model(train_dataloader, loss_fn, optimizer, device, monitor)
             total_energy.append(epoch_energy)
             mem_utilized.append(epoch_mem)
-            acc, avg_loss, avg_flops, _, _ = cnn_model.test_model(test_dataloader, loss_fn, device)
+            acc, avg_loss, avg_flops, _, _, _, _, _ = cnn_model.test_model(test_dataloader, loss_fn, device)
             early_stopping(avg_loss, cnn_model)
             if early_stopping.early_stop:
                 print("Early stopping triggered")
@@ -130,8 +130,8 @@ def evaluate_cnn_model(model_class, model_path, output_channels, num_conv_layers
     cnn_model.to(device)
     loss_fn = nn.CrossEntropyLoss()
     test_dataloader = DataLoader(test_data, batch_size=256, shuffle=False)
-    _, _, avg_flops, energy, mem_utilization, all_preds, all_labels = cnn_model.test_model(test_dataloader, loss_fn, device)
+    _, _, avg_flops, energy, mem_utilization, params, all_preds, all_labels = cnn_model.test_model(test_dataloader, loss_fn, device)
     confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"cnn_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
     
-    return avg_flops, energy, mem_utilization, auc, output_channels, num_conv_layers, kernel_size, lr
+    return avg_flops, energy, mem_utilization, auc, output_channels, num_conv_layers, kernel_size, lr, params

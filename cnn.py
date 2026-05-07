@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchsummary import summary
 from torch.utils.flop_counter import FlopCounterMode
 from zeus.monitor import ZeusMonitor
 
@@ -112,8 +113,10 @@ class CNNImageClassifier(nn.Module):
         print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
         all_preds = torch.cat(all_preds)
         all_labels = torch.cat(all_labels)
+        num_parameters = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"Number of parameters: {num_parameters}")
 
-        return 100*correct, test_loss, average_flops, round(measurement.total_energy, 2), round(mem_utilized / 1024**2, 2), all_preds, all_labels
+        return 100*correct, test_loss, average_flops, round(measurement.total_energy, 2), round(mem_utilized / 1024**2, 2), num_parameters, all_preds, all_labels
     
     def save_model(self, path):
         """Save the model's state dictionary to the specified path."""
