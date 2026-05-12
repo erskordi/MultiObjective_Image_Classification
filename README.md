@@ -30,7 +30,7 @@ The framework assessment is split into two paths:
     - This branch incorporates all the objectives as: $\min(\text{Memory Utilization}, \text{FLOPS}, \text{Energy Consumption}, \text{Number of parameters}, -\text{AUC})$
     - Due to the objective being 5D, we opted for plotting the Pareto front by flattening the number of parameters and AUC dimensions. Each point corresponds to representatives of different families of architectures.
 2. Single objective optimization. Each objective is evaluated separately while being subjected to constraints imposed by the models themselves. For example:
-    - $\min(FLOPS)$ subject to: 
+    - $\min(\text{FLOPS})$ subject to: 
         * $\text{Energy Consumption}\leq\text{Maximum Energy Consumption}$
         * $\text{Memory Utilization}\leq\text{Maximum Memory Utilization}$
         * $\text{Model parameters}\leq\text{Maximum Model parameters}$
