@@ -5,7 +5,7 @@ The present repo utilizes a multi-objective optimization algorithm where multipl
 Currently, we provide results from three datasets:
 - `FashionMNIST`
 - `CIFAR10`
-- `Gravity Spy (Gravitational Waves)` (source: [!Kaggle](https://www.kaggle.com/datasets/tentotheminus9/gravity-spy-gravitational-waves))
+- `Gravity Spy (Gravitational Waves)` (source: [Kaggle](https://www.kaggle.com/datasets/tentotheminus9/gravity-spy-gravitational-waves))
 
 ## Models
 
