@@ -1,4 +1,4 @@
-# MultiObjective_Image_Classification
+# MultiObjective Image Classification using Pareto fronts
 
 The present repo utilizes a multi-objective optimization algorithm where multiple pre-trained AI models are assessed given their evaluations on the test data.
 
