@@ -7,6 +7,8 @@ Currently, we provide results from three datasets:
 - `CIFAR10`
 - `Gravity Spy (LIGO)` (source: [Kaggle](https://www.kaggle.com/datasets/tentotheminus9/gravity-spy-gravitational-waves))
 
+The proposed approach poses a fundamental shift from building and training very large foundational models and instead opts for training multiple smaller models and setting them as solution points to a multi-objective optimization problem that allows domain experts to choose their preferred model/model architecture abiding to a number of essential hardware, energy, and model size constraints.
+
 ## Models
 
 We use three deep neural network architectures in this project:
