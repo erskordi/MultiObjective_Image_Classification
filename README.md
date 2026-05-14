@@ -39,6 +39,6 @@ The framework assessment is split into two paths:
 
 ## Visualization
 
-For each dataset, we provide the following plottings:
-- Pareto front (only for the multi-objective approach).
+For each dataset, we provide the following plots:
+- Pareto front (for the multi-objective approach).
 - Pairwise plots between constraints and each objective. These show potential patterns between models of the same architecture family.
