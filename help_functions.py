@@ -166,3 +166,116 @@ def auroc(preds, labels, num_classes):
     auroc_metric = MulticlassAUROC(num_classes=len(num_classes))
     auroc_metric.update(preds.cpu(), labels.cpu())
     return auroc_metric.compute().item()
+
+
+def _safe_divide(numerator, denominator):
+    return float(numerator) / float(denominator) if denominator else 0.0
+
+
+def _multiclass_confusion_counts(preds, labels, num_classes):
+    cm = torch.zeros((num_classes, num_classes), dtype=torch.float64)
+    preds_cpu = preds.detach().cpu()
+    labels_cpu = labels.detach().cpu()
+    for p, t in zip(preds_cpu, labels_cpu):
+        cm[int(t), int(p)] += 1.0
+    return cm
+
+
+def classification_metrics_multiclass(preds, labels, classes):
+    """Compute multiclass precision/recall, specificity, and f1.
+
+    Uses one-vs-rest decomposition for per-class metrics and reports
+    macro, weighted, and micro aggregates.
+
+    Args:
+        preds: predicted class indices, shape [N]
+        labels: true class indices, shape [N]
+        classes: list of class names
+
+    Returns:
+        dict with per_class list and aggregate metrics.
+    """
+    num_classes = len(classes)
+    cm = _multiclass_confusion_counts(preds, labels, num_classes)
+    total = float(cm.sum().item())
+    per_class = []
+
+    weighted_precision = 0.0
+    weighted_recall = 0.0
+    weighted_specificity = 0.0
+    weighted_f1 = 0.0
+    macro_precision = 0.0
+    macro_recall = 0.0
+    macro_specificity = 0.0
+    macro_f1 = 0.0
+    total_tp = 0.0
+    total_fp = 0.0
+    total_fn = 0.0
+
+    for c in range(num_classes):
+        tp = float(cm[c, c].item())
+        fp = float(cm[:, c].sum().item() - tp)
+        fn = float(cm[c, :].sum().item() - tp)
+        tn = total - tp - fp - fn
+        support = float(cm[c, :].sum().item())
+
+        precision = _safe_divide(tp, tp + fp)
+        recall = _safe_divide(tp, tp + fn)
+        specificity = _safe_divide(tn, tn + fp)
+        f1 = _safe_divide(2.0 * precision * recall, precision + recall)
+
+        per_class.append(
+            {
+                "class": classes[c],
+                "support": int(support),
+                "precision": precision,
+                "recall": recall,
+                "specificity": specificity,
+                "f1": f1,
+            }
+        )
+
+        macro_precision += precision
+        macro_recall += recall
+        macro_specificity += specificity
+        macro_f1 += f1
+
+        weight = _safe_divide(support, total)
+        weighted_precision += weight * precision
+        weighted_recall += weight * recall
+        weighted_specificity += weight * specificity
+        weighted_f1 += weight * f1
+
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
+
+    macro_precision /= max(1, num_classes)
+    macro_recall /= max(1, num_classes)
+    macro_specificity /= max(1, num_classes)
+    macro_f1 /= max(1, num_classes)
+
+    micro_precision = _safe_divide(total_tp, total_tp + total_fp)
+    micro_recall = _safe_divide(total_tp, total_tp + total_fn)
+    micro_f1 = _safe_divide(2.0 * micro_precision * micro_recall, micro_precision + micro_recall)
+
+    return {
+        "per_class": per_class,
+        "macro": {
+            "precision": macro_precision,
+            "recall": macro_recall,
+            "specificity": macro_specificity,
+            "f1": macro_f1,
+        },
+        "weighted": {
+            "precision": weighted_precision,
+            "recall": weighted_recall,
+            "specificity": weighted_specificity,
+            "f1": weighted_f1,
+        },
+        "micro": {
+            "precision": micro_precision,
+            "recall": micro_recall,
+            "f1": micro_f1,
+        },
+    }

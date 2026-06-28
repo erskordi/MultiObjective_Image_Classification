@@ -1,11 +1,11 @@
-
 import os
 from itertools import product
 
 import torch
 from torch import nn
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, ChainedScheduler
 from torch.utils.data import DataLoader
-from early_stopping_pytorch import EarlyStopping
+from early_stopping import EarlyStopping
 
 from help_functions import plot_metrics, save_metrics, save_txt, confusion_matrix, auroc
 
@@ -27,7 +27,7 @@ def train_vit(
             "num_heads": [8, 16],
             "patch_size": [32, 64],
             "lr": [1e-3, 5e-4],
-            "patience": [5],
+            "patience": [15],
     }
 
     keys = grid_search.keys()
@@ -52,7 +52,22 @@ def train_vit(
         
 
         loss_fn = nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(vit_model.parameters(), lr=lr, momentum=0.9)
+        optimizer = torch.optim.AdamW(vit_model.parameters(), lr=lr, weight_decay=0.05)
+        warmup_epochs = max(1, int(0.05 * epochs))
+        
+        scheduler = LinearLR(
+            optimizer,
+            start_factor=0.1,
+            total_iters = epochs
+        )
+
+        #scheduler = CosineAnnealingLR(
+        #    optimizer,
+        #    T_max = epochs - warmup_epochs,
+        #    eta_min = 1e-5
+        #)
+
+        #scheduler = ChainedScheduler([warmup_scheduler, cosine_scheduler])
 
         # Train ViT model
         # Conservative worker count avoids exhausting open file handles during long grid searches.
@@ -69,7 +84,7 @@ def train_vit(
         
         training_loss, accuracy, test_loss, total_energy, mem_utilized, flops = [], [], [], [], [], []
         monitor.begin_window("training")
-        early_stopping = EarlyStopping(patience=combo["patience"], verbose=True, path=model_dir/f"vit_early_stopped_model_{depth}_{num_heads}_{patch_size}_{lr}.pth")
+        early_stopping = EarlyStopping(patience=combo["patience"])
         mem_before = torch.cuda.memory_allocated() if device == "cuda" else 0
         for t in range(epochs):
             print(f"Epoch {t+1}\n-------------------------------")
@@ -77,10 +92,11 @@ def train_vit(
             total_energy.append(epoch_energy)
             mem_utilized.append(epoch_mem)
             acc, avg_loss, avg_flops, _, _, _, _, _ = vit_model.test_model(test_dataloader, loss_fn, device)
-            early_stopping(avg_loss, vit_model)
+            early_stopping(avg_loss)
             if early_stopping.early_stop:
                 print("Early stopping triggered")
                 break
+            scheduler.step()
             training_loss.append(total_loss)
             accuracy.append(acc)
             test_loss.append(avg_loss)
@@ -136,5 +152,5 @@ def evaluate_vit_model(
     _, _, avg_flops, energy, mem_utilization, params, all_preds, all_labels = vit_model.test_model(test_dataloader, loss_fn, device)
     confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"vit_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
-    
+
     return avg_flops, energy, mem_utilization, auc, depth, num_heads, patch_size, lr, params

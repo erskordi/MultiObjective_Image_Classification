@@ -134,7 +134,7 @@ class ViTImageClassifier(ViT):
         monitor.begin_window("epoch")
         mem_before = torch.cuda.memory_allocated() if device == "cuda" else 0
 
-        for X, y in dataloader:
+        for batch, (X, y) in enumerate(dataloader):
             # Place the model and predictions on the same device.
             X = X.to(device, non_blocking=(device == "cuda"))
             y = y.to(device, non_blocking=(device == "cuda"))
@@ -149,9 +149,16 @@ class ViTImageClassifier(ViT):
                 else:
                     loss = loss_fn(pred, y)
 
+            # Print progress every 10 batches.
+            #if batch % 10 == 0:
+            #    current = min((batch + 1) * X.size(0), size)
+            #    print(f"loss: {loss.item():>7f}  [{current:>5d}/{size:>5d}]")
+
             # Backpropagation
             # This step updates the parameter values inside your network.
             self.scaler.scale(loss).backward()
+            self.scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             self.scaler.step(optimizer)
             self.scaler.update()
             total_loss += loss.item()
@@ -207,7 +214,7 @@ class ViTImageClassifier(ViT):
         print(f"Number of parameters: {parameters}")
 
 
-        return 100*correct, test_loss, total_flops, measurement.total_energy, mem_utilized / 1024**2, parameters, all_preds, all_labels
+        return 100*correct, test_loss, total_flops, round(measurement.total_energy, 2), round(mem_utilized, 2), parameters, all_preds, all_labels
     
     def save_model(self, path):
         torch.save(self.state_dict(), path)

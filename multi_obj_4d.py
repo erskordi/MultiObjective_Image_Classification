@@ -5,7 +5,7 @@ The workflow is:
 2) assign 5 objective fields (FLOPs, Energy, Memory, AUC, Params),
 3) compute Pareto-optimal (non-dominated) points,
 4) create a deterministic ordering for Pareto front traversal,
-5) visualize objectives in a 3D projection colored by DNN family (vit/cnn/gat),
+5) visualize objectives in a 3D projection colored by DNN family (vit/cnn/gnn),
 6) plot all C(5,2)=10 pairwise 2D objective plots.
 """
 
@@ -37,13 +37,13 @@ class MOStruct:
     x2: np.ndarray
     x3: np.ndarray
     x4: np.ndarray
-    o1: np.ndarray  # FLOPs (log)
-    o2: np.ndarray  # Energy (log)
-    o3: np.ndarray  # Memory (log)
+    o1: np.ndarray  # FLOPs
+    o2: np.ndarray  # Energy
+    o3: np.ndarray  # Memory
     o4: np.ndarray  # AUC
-    o5: np.ndarray  # Params (log)
+    o5: np.ndarray  # Params
     model_file: np.ndarray
-    model_type: np.ndarray  # DNN family: vit, cnn, gat
+    model_type: np.ndarray  # DNN family: vit, cnn, gnn
 
 
 def make_mo_struct(
@@ -106,14 +106,17 @@ def setup_multi_obj_from_csv(
     """Build the 5D multi-objective structure from evaluation CSV results.
 
     Objective columns read from CSV:
-    - avg_flops_log       → o1 (FLOPs)
-    - energy_log          → o2 (Energy)
-    - mem_utilization_log → o3 (Memory)
+    - avg_flops           → o1 (FLOPs)
+    - energy              → o2 (Energy)
+    - mem_utilization     → o3 (Memory)
     - auc                 → o4
     - params              → o5
-    - model_type          → DNN family label (vit / cnn / gat)
+    - model_type          → DNN family label (vit / cnn / pgnn)
     """
     df = pd.read_csv(csv_path)
+    
+    # Rename "gat" to "pgnn" on the fly for consistent terminology
+    df["model_type"] = df["model_type"].str.replace("gat", "pgnn")
 
     if model_type is not None:
         df = df[df["model_type"] == model_type]
@@ -122,7 +125,7 @@ def setup_multi_obj_from_csv(
         raise ValueError("No rows found in CSV after applying filters.")
 
     required_cols = [
-        "avg_flops_log", "energy_log", "mem_utilization_log",
+        "avg_flops", "energy", "mem_utilization",
         "auc", "params", "file", "model_type",
     ]
     missing = [col for col in required_cols if col not in df.columns]
@@ -136,9 +139,9 @@ def setup_multi_obj_from_csv(
         x2=x_coords[:, 1],
         x3=x_coords[:, 2],
         x4=x_coords[:, 3],
-        o1=df["avg_flops_log"].to_numpy(dtype=float),
-        o2=df["energy_log"].to_numpy(dtype=float),
-        o3=df["mem_utilization_log"].to_numpy(dtype=float),
+        o1=df["avg_flops"].to_numpy(dtype=float),
+        o2=df["energy"].to_numpy(dtype=float),
+        o3=df["mem_utilization"].to_numpy(dtype=float),
         o4=df["auc"].to_numpy(dtype=float),
         o5=df["params"].to_numpy(dtype=float),
         model_file=df["file"].to_numpy(dtype=str),
@@ -289,11 +292,11 @@ def constrained_single_objective_optima(
             {
                 "Optimization": label,
                 "Model File": model_file[best_idx],
-                "FLOPs (log)": float(flops[best_idx]),
-                "Energy (log)": float(energy[best_idx]),
-                "Memory Utilization (log)": float(memory[best_idx]),
+                "FLOPs": float(flops[best_idx]),
+                "Energy": float(energy[best_idx]),
+                "Memory Utilization": float(memory[best_idx]),
                 "AUC": float(auc[best_idx]),
-                "Params (log)": float(params[best_idx]),
+                "Params": float(params[best_idx]),
             }
         )
 
@@ -330,24 +333,213 @@ def constrained_single_objective_optima(
     return pd.DataFrame(rows)
 
 
+def constrained_optima_with_constraints_table(
+    mo4d: MOStruct,
+    flops_max: float = np.inf,
+    energy_max: float = np.inf,
+    memory_max: float = np.inf,
+    auc_min: float = -np.inf,
+    params_max: float = np.inf,
+) -> pd.DataFrame:
+    """Return constrained objective optima augmented with the constraints used.
+
+    Each optimization row includes only the constraints that were active for
+    that objective; non-applicable constraints are left as NaN.
+    """
+    base_df = constrained_single_objective_optima(
+        mo4d,
+        flops_max=flops_max,
+        energy_max=energy_max,
+        memory_max=memory_max,
+        auc_min=auc_min,
+        params_max=params_max,
+    )
+
+    if base_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "Optimization",
+                "Model File",
+                "FLOPs",
+                "Energy",
+                "Memory Utilization",
+                "AUC",
+                "Params",
+                "Constraint FLOPs max",
+                "Constraint Energy max",
+                "Constraint Memory max",
+                "Constraint AUC min",
+                "Constraint Params max",
+            ]
+        )
+
+    constraint_by_optimization: dict[str, dict[str, float]] = {
+        "Max AUC": {
+            "Constraint FLOPs max": flops_max,
+            "Constraint Energy max": energy_max,
+            "Constraint Memory max": memory_max,
+            "Constraint Params max": params_max,
+        },
+        "Min Energy": {
+            "Constraint FLOPs max": flops_max,
+            "Constraint Memory max": memory_max,
+            "Constraint AUC min": auc_min,
+            "Constraint Params max": params_max,
+        },
+        "Min FLOPs": {
+            "Constraint Energy max": energy_max,
+            "Constraint Memory max": memory_max,
+            "Constraint AUC min": auc_min,
+            "Constraint Params max": params_max,
+        },
+        "Min Memory": {
+            "Constraint FLOPs max": flops_max,
+            "Constraint Energy max": energy_max,
+            "Constraint AUC min": auc_min,
+            "Constraint Params max": params_max,
+        },
+        "Min Params": {
+            "Constraint FLOPs max": flops_max,
+            "Constraint Energy max": energy_max,
+            "Constraint Memory max": memory_max,
+            "Constraint AUC min": auc_min,
+        },
+    }
+
+    rows_with_constraints: list[dict[str, object]] = []
+    for _, row in base_df.iterrows():
+        row_out = row.to_dict()
+        row_out.update(
+            {
+                "Constraint FLOPs max": np.nan,
+                "Constraint Energy max": np.nan,
+                "Constraint Memory max": np.nan,
+                "Constraint AUC min": np.nan,
+                "Constraint Params max": np.nan,
+            }
+        )
+        row_out.update(constraint_by_optimization.get(str(row["Optimization"]), {}))
+        rows_with_constraints.append(row_out)
+
+    return pd.DataFrame(rows_with_constraints)
+
+
+def constrained_pareto_with_constraints_table(
+    mo4d: MOStruct,
+    maximize: tuple[bool, ...] = (False, False, False, True, False),
+    flops_max: float = np.inf,
+    energy_max: float = np.inf,
+    memory_max: float = np.inf,
+    auc_min: float = -np.inf,
+    params_max: float = np.inf,
+) -> pd.DataFrame:
+    """Return constrained Pareto points augmented with active constraint values."""
+    feasible_mask = _constraint_mask(
+        mo4d,
+        flops_max=flops_max,
+        energy_max=energy_max,
+        memory_max=memory_max,
+        auc_min=auc_min,
+        params_max=params_max,
+    )
+    feasible = _subset_mo_struct(mo4d, feasible_mask)
+
+    if feasible.o1.size == 0:
+        return pd.DataFrame(
+            columns=[
+                "Pareto Index",
+                "Model Type",
+                "Model File",
+                "FLOPs",
+                "Energy",
+                "Memory Utilization",
+                "AUC",
+                "Params",
+                "Constraint FLOPs max",
+                "Constraint Energy max",
+                "Constraint Memory max",
+                "Constraint AUC min",
+                "Constraint Params max",
+            ]
+        )
+
+    pareto_ordered = pareto_front_conts4d(feasible, maximize=maximize)
+    n_points = pareto_ordered.o1.ravel().size
+
+    return pd.DataFrame(
+        {
+            "Pareto Index": np.arange(1, n_points + 1, dtype=int),
+            "Model Type": pareto_ordered.model_type.ravel(),
+            "Model File": pareto_ordered.model_file.ravel(),
+            "FLOPs": pareto_ordered.o1.ravel().astype(float),
+            "Energy": pareto_ordered.o2.ravel().astype(float),
+            "Memory Utilization": pareto_ordered.o3.ravel().astype(float),
+            "AUC": pareto_ordered.o4.ravel().astype(float),
+            "Params": pareto_ordered.o5.ravel().astype(float),
+            "Constraint FLOPs max": np.full(n_points, flops_max, dtype=float),
+            "Constraint Energy max": np.full(n_points, energy_max, dtype=float),
+            "Constraint Memory max": np.full(n_points, memory_max, dtype=float),
+            "Constraint AUC min": np.full(n_points, auc_min, dtype=float),
+            "Constraint Params max": np.full(n_points, params_max, dtype=float),
+        }
+    )
+
+
 _OBJ_LABELS = [
-    "FLOPs (log)",
-    "Energy (log)",
-    "Memory Utilization (log)",
+    "FLOPs",
+    "Energy",
+    "Memory Utilization",
     "AUC",
-    "Params (log)",
+    "Params",
 ]
+_OBJ_OPT_TITLES = [
+    "Min FLOPs",
+    "Min Energy",
+    "Min Memory",
+    "Max AUC",
+    "Min Params",
+]
+
+# Raw (untransformed) objectives span many orders of magnitude; use log axes
+# for FLOPs, Energy, Memory, and Params. AUC is [0,1] so stays linear.
+_OBJ_AXIS_SCALES = ["log", "log", "log", "linear", "log"]
 
 # Visual identity per DNN family (consistent across all plots).
 _FAMILY_COLORS: dict[str, str] = {
     "vit": "steelblue",
     "cnn": "darkorange",
-    "gat": "seagreen",
+    "gnn": "seagreen",
+    "mobilenet": "mediumpurple",
+    "resnet18": "sienna",
+    "resnet34": "peru",
+    "resnet50": "chocolate",
+    "resnet101": "darkred",
+    "resnet152": "maroon",
+    "tensormera": "teal",
 }
 _FAMILY_MARKERS: dict[str, str] = {
     "vit": "o",
     "cnn": "s",
-    "gat": "^",
+    "gnn": "^",
+    "mobilenet": "D",
+    "resnet18": "X",
+    "resnet34": "P",
+    "resnet50": "v",
+    "resnet101": "*",
+    "resnet152": "h",
+    "tensormera": "8",
+}
+_FAMILY_DISPLAY: dict[str, str] = {
+    "vit": "ViT",
+    "cnn": "CNN",
+    "gnn": "PGNN",
+    "mobilenet": "MobileNetV3",
+    "resnet18": "ResNet18",
+    "resnet34": "ResNet34",
+    "resnet50": "ResNet50",
+    "resnet101": "ResNet101",
+    "resnet152": "ResNet152",
+    "tensormera": "TensorMERA",
 }
 
 
@@ -366,6 +558,7 @@ def plot_mo_all(figure_num: int, mo_points: MOStruct, mo_pareto_front: MOStruct)
         fmask = mo_points.model_type.ravel() == family
         color = _FAMILY_COLORS.get(family, "grey")
         fmarker = _FAMILY_MARKERS.get(family, "o")
+        display_name = _FAMILY_DISPLAY.get(family, family.upper())
         ax.scatter(
             mo_points.o1.ravel()[fmask],
             mo_points.o2.ravel()[fmask],
@@ -376,7 +569,7 @@ def plot_mo_all(figure_num: int, mo_points: MOStruct, mo_pareto_front: MOStruct)
             s=52,
             edgecolors="white",
             linewidths=0.4,
-            label=family.upper(),
+            label=display_name,
         )
 
     ax.plot(
@@ -387,6 +580,7 @@ def plot_mo_all(figure_num: int, mo_points: MOStruct, mo_pareto_front: MOStruct)
         linewidth=2.5,
         label="Ordered Pareto traversal",
     )
+    
 
     # Compact point indices; full index→model mapping is in the table figure.
     for idx, (o1, o2, o3) in enumerate(
@@ -428,13 +622,14 @@ def save_mo_all_interactive_html(
         fmask = mo_points.model_type.ravel() == family
         color = _FAMILY_COLORS.get(family, "grey")
         fmarker = marker_map.get(_FAMILY_MARKERS.get(family, "o"), "circle")
+        display_name = _FAMILY_DISPLAY.get(family, family.upper())
         fig.add_trace(
             go.Scatter3d(
                 x=mo_points.o1.ravel()[fmask],
                 y=mo_points.o2.ravel()[fmask],
                 z=mo_points.o3.ravel()[fmask],
                 mode="markers",
-                name=family.upper(),
+                name=display_name,
                 marker={"size": 5, "color": color, "symbol": fmarker, "opacity": 0.85},
                 text=mo_points.model_file.ravel()[fmask],
                 hovertemplate=(
@@ -479,6 +674,7 @@ def save_mo_all_interactive_html(
 
 def plot_pairwise_objectives(
     mo_all: MOStruct,
+    csv_path: str | Path = "model_evaluation_results_FashionMNIST.csv",
     figure_num: int = 2,
     flops_max: float = np.inf,
     energy_max: float = np.inf,
@@ -488,7 +684,7 @@ def plot_pairwise_objectives(
 ) -> dict[str, pd.DataFrame]:
     """Plot all C(5,2)=10 pairwise 2D objective plots in a 2×5 grid.
 
-    Background points are colored by DNN family (vit/cnn/gat). Constrained
+    Background points are colored by DNN family (vit/cnn/gnn). Constrained
     single-objective optima are overlaid with distinct crimson markers.
     """
     objectives_all = [mo_all.o1, mo_all.o2, mo_all.o3, mo_all.o4, mo_all.o5]
@@ -508,6 +704,13 @@ def plot_pairwise_objectives(
         "Min FLOPs": "^",
         "Min Memory": "D",
         "Min Params": "P",
+    }
+    opt_color_map = {
+        "Max AUC": "crimson",
+        "Min Energy": "royalblue",
+        "Min FLOPs": "darkorange",
+        "Min Memory": "mediumseagreen",
+        "Min Params": "purple",
     }
 
     def _plot_svm_separator(ax: plt.Axes, x_vals: np.ndarray, y_vals: np.ndarray) -> None:
@@ -584,6 +787,7 @@ def plot_pairwise_objectives(
     for family in families:
         color = _FAMILY_COLORS.get(family, "grey")
         fmarker = _FAMILY_MARKERS.get(family, "o")
+        display_name = _FAMILY_DISPLAY.get(family, family.upper())
         shared_handles.append(
             Line2D(
                 [0], [0],
@@ -594,17 +798,17 @@ def plot_pairwise_objectives(
                 markeredgewidth=0.3,
                 markersize=6,
                 linestyle="None",
-                label=family.upper(),
+                label=display_name,
             )
         )
-        shared_labels.append(family.upper())
+        shared_labels.append(display_name)
     for opt_label, opt_marker in marker_map.items():
         shared_handles.append(
             Line2D(
                 [0], [0],
                 marker=opt_marker,
                 color="none",
-                markerfacecolor="crimson",
+                markerfacecolor=opt_color_map.get(opt_label, "crimson"),
                 markeredgecolor="black",
                 markeredgewidth=0.7,
                 markersize=7 if opt_marker == "*" else 5,
@@ -632,6 +836,7 @@ def plot_pairwise_objectives(
             fmask = mo_all.model_type.ravel() == family
             color = _FAMILY_COLORS.get(family, "grey")
             fmarker = _FAMILY_MARKERS.get(family, "o")
+            display_name = _FAMILY_DISPLAY.get(family, family.upper())
             fx = objectives_all[i].ravel()[fmask]
             fy = objectives_all[j].ravel()[fmask]
             ax.scatter(
@@ -642,9 +847,9 @@ def plot_pairwise_objectives(
                 alpha=0.55,
                 edgecolors="white",
                 linewidths=0.3,
-                label=family.upper(),
+                label=display_name,
             )
-            # Draw family grouping envelope only for 3+ distinct points.
+            # Draw family grouping envelop only for 3+ distinct points.
             # Collinear sets are skipped when convex hull construction fails.
             pts = np.column_stack((fx, fy))
             unique_pts = np.unique(pts, axis=0)
@@ -667,7 +872,7 @@ def plot_pairwise_objectives(
                     pass  # degenerate geometry — skip hull silently
 
             # Optimization-based regime boundary across all models for this pair.
-            _plot_svm_separator(ax, pair_x_all, pair_y_all)
+            #_plot_svm_separator(ax, pair_x_all, pair_y_all)
 
         # --- overlay: constrained single-objective optima ---
         pair_rows: list[dict[str, object]] = []
@@ -676,16 +881,17 @@ def plot_pairwise_objectives(
             y_val = float(row[_OBJ_LABELS[j]])
             opt_label = str(row["Optimization"])
             marker = marker_map.get(opt_label, "o")
+            opt_color = opt_color_map.get(opt_label, "crimson")
 
             ax.scatter(
                 x_val,
                 y_val,
-                s=180 if marker == "*" else 60,
+                s=220 if marker == "*" else 85,
                 marker=marker,
-                c="crimson",
+                c=opt_color,
                 edgecolors="black",
-                linewidths=0.7,
-                zorder=2,
+                linewidths=0.9,
+                zorder=3,
                 label=opt_label,
             )
 
@@ -722,24 +928,22 @@ def plot_pairwise_objectives(
 
         ax.set_xlabel(_OBJ_LABELS[i])
         ax.set_ylabel(_OBJ_LABELS[j])
-        ax.set_title(f"{_OBJ_LABELS[i]} vs {_OBJ_LABELS[j]}")
+        ax.set_title(f"{_OBJ_OPT_TITLES[i]} vs {_OBJ_OPT_TITLES[j]}")
+
+        ax.set_xscale(_OBJ_AXIS_SCALES[i])
+        ax.set_yscale(_OBJ_AXIS_SCALES[j])
 
         # Keep a zoomed AUC scale whenever AUC appears on an axis.
-        if i == 3:
+        if i == 3 and csv_path not in ("model_evaluation_results_FashionMNIST.csv", "model_evaluation_results_GW.csv"):
             ax.set_xlim(0.9, 1.0)
             ax.set_xticks(np.linspace(0.9, 1.0, 6))
-        if j == 2:
-            mem_vals = pair_y_all[np.isfinite(pair_y_all)]
-            if mem_vals.size > 0:
-                mem_min = float(np.min(mem_vals))
-                mem_max = float(np.max(mem_vals))
-                mem_span = mem_max - mem_min
-                pad = 0.08 * mem_span if mem_span > 0 else 0.02
-                ax.set_ylim(mem_min - pad, mem_max + pad)
-                ax.set_yticks(np.linspace(mem_min - pad, mem_max + pad, 6))
-        if j == 3:
+        else:
+            ax.set_xlim(auto=True)
+        if j == 3 and csv_path not in ("model_evaluation_results_FashionMNIST.csv", "model_evaluation_results_GW.csv"):
             ax.set_ylim(0.9, 1.0)
             ax.set_yticks(np.linspace(0.9, 1.0, 6))
+        else:
+            ax.set_ylim(auto=True)
 
         pair_key = f"{_OBJ_LABELS[i]} vs {_OBJ_LABELS[j]}"
         if pair_table_df.empty:
@@ -761,6 +965,7 @@ def plot_pairwise_objectives(
         shared_handles,
         shared_labels,
         loc="center right",
+        bbox_to_anchor=(0.98, 0.5),
         fontsize=9,
         markerscale=1.2,
         handlelength=1.2,
@@ -770,8 +975,8 @@ def plot_pairwise_objectives(
         title="DNN Family / Objective",
         title_fontsize=9,
     )
-    # Extra spacing reduces label overlap in the dense 2x5 layout.
-    fig.tight_layout(rect=[0.0, 0.0, 0.86, 1.0], w_pad=2.0, h_pad=2.0)
+    # Keep legend close to subplots and preserve left margin for full y-axis labels.
+    fig.tight_layout(rect=[0.03, 0.0, 0.90, 1.0], w_pad=2.0, h_pad=2.0)
     return pair_tables
 
 
@@ -782,6 +987,7 @@ def plot_correlation_analysis(mo_all: MOStruct, figure_num: int = 4) -> None:
     AUC correlation with every other objective is highlighted by its row/column.
     """
     families = np.unique(mo_all.model_type.ravel())
+    
     obj_arrays = np.column_stack(
         [mo_all.o1, mo_all.o2, mo_all.o3, mo_all.o4, mo_all.o5]
     )
@@ -799,8 +1005,9 @@ def plot_correlation_analysis(mo_all: MOStruct, figure_num: int = 4) -> None:
                     mat[a, b] = float(np.corrcoef(x, y)[0, 1])
         return mat
 
-    ncols = 1 + len(families)
-    fig, axes = plt.subplots(1, ncols, num=figure_num, figsize=(5 * ncols, 5))
+    total_panels = 1 + len(families)  # 1 overall + one panel per family
+    ncols = int(np.ceil(total_panels / 2))
+    fig, axes = plt.subplots(2, ncols, num=figure_num, figsize=(5 * ncols, 5))
     fig.suptitle(
         "Pearson Correlation Between Objectives (Overall and Per DNN Family)",
         fontsize=13,
@@ -809,10 +1016,13 @@ def plot_correlation_analysis(mo_all: MOStruct, figure_num: int = 4) -> None:
     short_labels = ["FLOPs", "Energy", "Memory", "AUC", "Params"]
     auc_idx = 3  # highlight AUC row/col
 
-    panels = [(axes[0], "All models", obj_arrays)]
-    for family in families:
+    panels = [(axes[0, 0], "All models", obj_arrays)]
+    for idx, family in enumerate(families, start=1):
         fmask = mo_all.model_type.ravel() == family
-        panels.append((axes[1 + list(families).index(family)], family.upper(), obj_arrays[fmask]))
+        display_name = _FAMILY_DISPLAY.get(family, family.upper())
+        row = idx // ncols
+        col = idx % ncols
+        panels.append((axes[row, col], display_name, obj_arrays[fmask]))
 
     for ax, title, arr in panels:
         mat = _corr_matrix(arr)
@@ -840,6 +1050,15 @@ def plot_correlation_analysis(mo_all: MOStruct, figure_num: int = 4) -> None:
         ax.set_title(title, fontsize=10)
 
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="r")
+
+    # Hide any unused axes in the 2xncols layout.
+    used_slots = {(0, 0)}
+    for idx in range(1, len(families) + 1):
+        used_slots.add((idx // ncols, idx % ncols))
+    for r in range(2):
+        for c in range(ncols):
+            if (r, c) not in used_slots:
+                axes[r, c].axis("off")
 
     fig.tight_layout()
 
@@ -879,6 +1098,8 @@ def run_reg_mo_obj(
     auc_min: float = -np.inf,
     params_max: float = np.inf,
     interactive_html_path: str | Path | None = None,
+    constrained_table_csv_path: str | Path | None = None,
+    constrained_pareto_table_csv_path: str | Path | None = None,
 ) -> tuple[MOStruct, MOStruct, MOStruct]:
     """End-to-end 5D multi-objective analysis from CSV metrics."""
     mo5d = setup_multi_obj_from_csv(csv_path=csv_path, model_type=model_type)
@@ -901,6 +1122,48 @@ def run_reg_mo_obj(
         auc_min=auc_min,
         params_max=params_max,
     )
+
+    constrained_table_df = constrained_optima_with_constraints_table(
+        mo5d,
+        flops_max=flops_max,
+        energy_max=energy_max,
+        memory_max=memory_max,
+        auc_min=auc_min,
+        params_max=params_max,
+    )
+    if constrained_table_csv_path is None:
+        csv_stem = Path(csv_path).stem
+        dataset_name = csv_stem.removeprefix("model_evaluation_results_")
+        constrained_table_csv_path = (
+            Path("evaluation_results")
+            / f"constrained_objective_values_and_constraints_{dataset_name}.csv"
+        )
+    constrained_table_path = Path(constrained_table_csv_path)
+    constrained_table_path.parent.mkdir(parents=True, exist_ok=True)
+    constrained_table_df.to_csv(constrained_table_path, index=False)
+    print(f"\nSaved constrained optima table to: {constrained_table_path}")
+
+    constrained_pareto_df = constrained_pareto_with_constraints_table(
+        mo5d,
+        maximize=maximize,
+        flops_max=flops_max,
+        energy_max=energy_max,
+        memory_max=memory_max,
+        auc_min=auc_min,
+        params_max=params_max,
+    )
+    if constrained_pareto_table_csv_path is None:
+        csv_stem = Path(csv_path).stem
+        dataset_name = csv_stem.removeprefix("model_evaluation_results_")
+        constrained_pareto_table_csv_path = (
+            Path("evaluation_results")
+            / f"constrained_pareto_objective_values_and_constraints_{dataset_name}.csv"
+        )
+    constrained_pareto_table_path = Path(constrained_pareto_table_csv_path)
+    constrained_pareto_table_path.parent.mkdir(parents=True, exist_ok=True)
+    constrained_pareto_df.to_csv(constrained_pareto_table_path, index=False)
+    print(f"Saved constrained Pareto table to: {constrained_pareto_table_path}")
+
     plot_pair_index_tables(pair_tables, figure_num=3)
     plot_correlation_analysis(mo5d, figure_num=4)
 

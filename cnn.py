@@ -116,7 +116,7 @@ class CNNImageClassifier(nn.Module):
         num_parameters = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Number of parameters: {num_parameters}")
 
-        return 100*correct, test_loss, average_flops, round(measurement.total_energy, 2), round(mem_utilized / 1024**2, 2), num_parameters, all_preds, all_labels
+        return 100*correct, test_loss, average_flops, round(measurement.total_energy, 2), round(mem_utilized, 2), num_parameters, all_preds, all_labels
     
     def save_model(self, path):
         """Save the model's state dictionary to the specified path."""

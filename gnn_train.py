@@ -2,19 +2,21 @@ import os
 from itertools import product
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from early_stopping_pytorch import EarlyStopping
+from early_stopping import EarlyStopping
 from torch.utils.flop_counter import FlopCounterMode
 from torchsummary import summary
 from zeus.monitor import ZeusMonitor
 
 from gnn_preprocess import GenericImagePreprocessor, GenericGraphReadyImageDataset
 from gnn_graph_build import SparseImageGraphBuilder, SparseGraphReadyDataset, sparse_graph_collate_fn
-from help_functions import plot_metrics, save_metrics, save_txt, confusion_matrix, auroc
+from help_functions import plot_metrics, save_metrics, save_txt, confusion_matrix, auroc, classification_metrics_multiclass
 from pgnn import PGNNConfig, build_pgnn_model
+from data_loader import _compute_class_weights
 
 
 # ============================================================
@@ -67,7 +69,8 @@ def train_model(model, loader, optimizer, criterion, device, monitor=None, scale
                 edge_index=batch["edge_index"],
                 batch=batch["batch"],
             )
-            loss = criterion(logits, batch["label"])
+            # Compute the loss in fp32 so class weights stay dtype-compatible under AMP.
+            loss = criterion(logits.float(), batch["label"])
 
         if scaler is not None and use_amp:
             scaler.scale(loss).backward()
@@ -127,7 +130,8 @@ def test_model(model, loader, criterion, device, use_amp=False):
                 all_labels.append(batch["label"].cpu())
         total_flops += flop_counter.get_total_flops()
 
-        loss = criterion(logits, batch["label"])
+        # Compute the loss in fp32 so class weights stay dtype-compatible under AMP.
+        loss = criterion(logits.float(), batch["label"])
         acc = compute_accuracy(logits, batch["label"])
 
         running_loss += loss.item()
@@ -237,6 +241,9 @@ def train_gnn(
             cache_graphs_by_size=True,
         )
 
+        # Compute class weights for imbalanced dataset from original train_data
+        class_weights = _compute_class_weights(train_data, len(classes))
+        
         train_loader = DataLoader(
             train_ds,
             batch_size=BATCH_SIZE,
@@ -276,12 +283,15 @@ def train_gnn(
 
         pgnn_model = build_pgnn_model(cfg).to(device)
 
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             pgnn_model.parameters(),
             lr=lr,
             weight_decay=1e-4,
         )
-        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7
+        )
+        criterion = nn.CrossEntropyLoss(weight=class_weights.to(device), label_smoothing=0.1)
 
         use_amp = device == "cuda"
         scaler = torch.amp.GradScaler(enabled=use_amp)
@@ -293,9 +303,7 @@ def train_gnn(
             monitor.begin_window("training")
 
         early_stopping = EarlyStopping(
-            patience=7,
-            verbose=True,
-            path=model_dir / f"gnn_early_stopped_model_{x1_hidden_dim}_{x2_hidden_dim}_{lr}.pth",
+            patience=10
         )
 
         mem_before = torch.cuda.memory_allocated() if device == "cuda" else 0
@@ -333,10 +341,11 @@ def train_gnn(
                 f"Test Loss: {avg_loss:.4f}, Test Acc: {acc:.2f}%"
             )
 
-            early_stopping(avg_loss, pgnn_model)
+            early_stopping(avg_loss)
             if early_stopping.early_stop:
                 print("Early stopping triggered. Ending training.")
                 break
+            scheduler.step(avg_loss)
 
         print("Done!")
         epochs_ran = len(training_loss)
@@ -344,7 +353,7 @@ def train_gnn(
 
         if monitor is not None:
             measurement = monitor.end_window("training")
-            print(f"Entire training: {round(measurement.time, 2)} s, {round(measurement.total_energy, 2)} J")
+            print(f"Entire training: {round(measurement.time, 2)} s, {round(measurement.total_energy / 1e6, 2)} MJ")
 
         if epochs_ran > 0:
             print(
@@ -353,7 +362,7 @@ def train_gnn(
                 f"Average Test Loss: {sum(test_loss)/epochs_ran:.4f}"
             )
             print(
-                f"Average Energy: {sum(total_energy)/epochs_ran:.2f} J, "
+                f"Average Energy: {sum(total_energy)/epochs_ran:.2f} MJ, "
                 f"Average Memory Utilized: {sum(mem_utilized)/epochs_ran:.2f} MB"
             )
             print(f"Average FLOPs per sample: {sum(flops)/epochs_ran:.2f}")
@@ -383,7 +392,7 @@ def train_gnn(
             )
 
             save_txt(
-                f"{round((mem_after - mem_before) / 1024**2, 2)}MB\n{sum(flops)/epochs_ran:.2f}FLOPS",
+                f"{round((mem_after - mem_before) / 1024**2, 2)}MB\n{(sum(flops) / 1e6)/epochs_ran:.2f}MFLOPS",
                 model_dir / f"gnn_memory_utilization_{x1_in_dim}_{x1_hidden_dim}_{x2_in_dim}_{x2_hidden_dim}_{lr}.txt",
             )
 
@@ -463,8 +472,20 @@ def evaluate_gnn_model(
     )
     confusion_matrix(all_preds, all_labels, labels, model_path.parent/f"gnn_confusion_matrix_{model_path.stem}.png")
     auc = auroc(all_preds, all_labels, labels)
+    cls_metrics = classification_metrics_multiclass(all_preds.argmax(dim=1), all_labels, labels)
 
-    return avg_flops, energy, mem_utilization, auc, x1_in_param, x1_hidden_param, x2_in_param, x2_hidden_param, lr, params
+    return (
+        avg_flops,
+        energy,
+        mem_utilization,
+        auc,
+        x1_in_param,
+        x1_hidden_param,
+        x2_in_param,
+        x2_hidden_param,
+        lr,
+        params,
+    )
 
 # ============================================================
 # Main
